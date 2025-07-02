@@ -1,51 +1,23 @@
+
 import requests
-from bs4 import BeautifulSoup
 import time
 import json
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime
-import hashlib
 import os
-from dataclasses import dataclass
-from typing import List, Dict, Optional
 import re
 import logging
-import undetected_chromedriver as uc
-from selenium import webdriver
+from apartment import Apartment
+from immobilienscout24_scraper import Immobilienscout24Scraper
+from wg_gesucht_scraper import WgGesuchtScraper
+from ebay_kleinanzeigen_scraper import EbayKleinanzeigenScraper
+from notification_manager import NotificationManager
 
 # Logging konfigurieren
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-@dataclass
-class Apartment:
-    title: str
-    price: str
-    location: str
-    rooms: str
-    size: str
-    url: str
-    source: str
-    description: str = ""
-    
-    def to_dict(self):
-        return {
-            'title': self.title,
-            'price': self.price,
-            'location': self.location,
-            'rooms': self.rooms,
-            'size': self.size,
-            'url': self.url,
-            'source': self.source,
-            'description': self.description
-        }
-    
-    def get_hash(self):
-        """Eindeutige ID für die Wohnung generieren"""
-        content = f"{self.title}{self.price}{self.location}{self.url}"
-        return hashlib.md5(content.encode()).hexdigest()
 
 class ApartmentScraper:
     def __init__(self, config_file='scraper_config.json'):
@@ -65,6 +37,10 @@ class ApartmentScraper:
             'Sec-Fetch-Site': 'none',
             'Cache-Control': 'max-age=0'
         })
+        self.immoscout_scraper = Immobilienscout24Scraper(self.config, self.session, logger)
+        self.wggesucht_scraper = WgGesuchtScraper(self.config, self.session, logger)
+        self.ebay_scraper = EbayKleinanzeigenScraper(self.config, self.session, logger)
+        self.notifier = NotificationManager(self.config, logger)
         
     def load_config(self, config_file):
         """Konfiguration laden oder Standard-Konfiguration erstellen"""
@@ -153,196 +129,13 @@ class ApartmentScraper:
             json.dump(list(self.seen_apartments), f, indent=2)
     
     def scrape_immobilienscout24(self, city):
-        logger.info("ImmobilienScout24 scrapen")
-        apartments = []
-        try:
-            base_url = "https://www.immobilienscout24.de/Suche/de/nordrhein-westfalen/soest-kreis/soest/wohnung-mieten"
-            params = {
-                'price': f'-{self.config["search_criteria"]["max_price"]}',
-                'numberofrooms': f'{self.config["search_criteria"]["min_rooms"]}-{self.config["search_criteria"]["max_rooms"]}',
-                'petsallowedtypes': 'yes,negotiable'
-            }
-            
-            # Volle URL mit Parametern ausgeben
-            temp_req = requests.Request('GET', base_url, params=params).prepare()
-            full_url = temp_req.url
-            print(f"ImmobilienScout24 URL: {full_url}")
-
-            driver = uc.Chrome()
-            if full_url is not None:
-                driver.get(full_url)
-            else:
-                logger.error("Die generierte URL für ImmobilienScout24 ist None.")
-                return apartments
-
-            response = self.session.get(base_url, params=params)
-
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Wohnungsangebote finden (Selektoren können sich ändern)
-                listings = soup.find_all('div', class_='result-list-entry')
-
-                logger.info(str(listings.__len__()) + " Anzeigen gefunden.")
-                
-                for listing in listings[:self.config["scraping"]["max_results_per_site"]]:
-                    try:
-                        title = listing.find('h2', class_='result-list-entry__brand-title-container').text.strip()
-                        price = listing.find('dd', class_='grid-item').text.strip()
-                        location = listing.find('div', class_='result-list-entry__address').text.strip()
-                        
-                        # URL extrahieren
-                        link_elem = listing.find('a')
-                        if link_elem:
-                            url = "https://www.immobilienscout24.de" + link_elem.get('href')
-                        else:
-                            continue
-                        
-                        apartment = Apartment(
-                            title=title,
-                            price=price,
-                            location=location,
-                            rooms="N/A",
-                            size="N/A",
-                            url=url,
-                            source="ImmobilienScout24"
-                        )
-                        
-                        if self.matches_criteria(apartment):
-                            apartments.append(apartment)
-                    
-                    except Exception as e:
-                        logger.error(f"Fehler beim Parsen eines Listings: {e}")
-                        continue
-            else:
-                logger.error(f"Fehler beim Abrufen von ImmobilienScout24: Statuscode {response.status_code}")
-                '''logger.error(f"Response HTML: {response.text[:2000]}")'''
-        
-        except Exception as e:
-            logger.error(f"Fehler beim Scrapen von ImmobilienScout24: {e}")
-        
-        return apartments
+        return self.immoscout_scraper.scrape(city)
     
     def scrape_wg_gesucht(self, city):
-        logger.info("Wg-Gesucht scrapen")
-        apartments = []
-        try:
-            base_url = f"https://www.wg-gesucht.de/wohnungen-in-{city.lower()}.html"
-
-
-            # Volle URL mit Parametern ausgeben
-            temp_req = requests.Request('GET', base_url, params=params).prepare()
-            full_url = temp_req.url
-            print(f"Wg-Gesucht URL: {full_url}")
-
-            response = self.session.get(base_url)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Wohnungsangebote finden
-                listings = soup.find_all('div', class_='wgg_card')
-                logger.info(str(listings.__len__()) + " Anzeigen gefunden.")
-                
-                for listing in listings[:self.config["scraping"]["max_results_per_site"]]:
-                    try:
-                        title_elem = listing.find('h3', class_='headline')
-                        if not title_elem:
-                            continue
-                        
-                        title = title_elem.text.strip()
-                        
-                        # Preis extrahieren
-                        price_elem = listing.find('div', class_='col-xs-3')
-                        price = price_elem.text.strip() if price_elem else "N/A"
-                        
-                        # Link extrahieren
-                        link_elem = listing.find('a')
-                        if link_elem:
-                            url = "https://www.wg-gesucht.de/" + link_elem.get('href')
-                        else:
-                            continue
-                        
-                        apartment = Apartment(
-                            title=title,
-                            price=price,
-                            location=city,
-                            rooms="N/A",
-                            size="N/A",
-                            url=url,
-                            source="WG-Gesucht"
-                        )
-                        
-                        if self.matches_criteria(apartment):
-                            apartments.append(apartment)
-                    
-                    except Exception as e:
-                        logger.error(f"Fehler beim Parsen eines WG-Gesucht Listings: {e}")
-                        continue
-        
-        except Exception as e:
-            logger.error(f"Fehler beim Scrapen von WG-Gesucht: {e}")
-        
-        return apartments
+        return self.wggesucht_scraper.scrape(city)
     
     def scrape_ebay_kleinanzeigen(self, city):
-        logger.info("eBay Kleinanzeigen scrapen")
-        apartments = []
-        try:
-            base_url = f"https://www.ebay-kleinanzeigen.de/s-wohnung-mieten/{city}/c203"
-            response = self.session.get(base_url)
-            
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Wohnungsangebote finden
-                listings = soup.find_all('div', class_='aditem')
-                logger.info(str(listings.__len__()) + " Anzeigen gefunden.")
-                
-                for listing in listings[:self.config["scraping"]["max_results_per_site"]]:
-                    try:
-                        title_elem = listing.find('h2', class_='text-module-begin')
-                        if not title_elem:
-                            continue
-                        
-                        title = title_elem.text.strip()
-                        
-                        # Preis extrahieren
-                        price_elem = listing.find('p', class_='aditem-main--middle--price-shipping--price')
-                        price = price_elem.text.strip() if price_elem else "VB"
-                        
-                        # Ort extrahieren
-                        location_elem = listing.find('div', class_='aditem-main--top--left')
-                        location = location_elem.text.strip() if location_elem else city
-                        
-                        # Link extrahieren
-                        link_elem = listing.find('a', class_='ellipsis')
-                        if link_elem:
-                            url = "https://www.ebay-kleinanzeigen.de" + link_elem.get('href')
-                        else:
-                            continue
-                        
-                        apartment = Apartment(
-                            title=title,
-                            price=price,
-                            location=location,
-                            rooms="N/A",
-                            size="N/A",
-                            url=url,
-                            source="eBay Kleinanzeigen"
-                        )
-                        
-                        if self.matches_criteria(apartment):
-                            apartments.append(apartment)
-                    
-                    except Exception as e:
-                        logger.error(f"Fehler beim Parsen eines eBay Kleinanzeigen Listings: {e}")
-                        continue
-        
-        except Exception as e:
-            logger.error(f"Fehler beim Scrapen von eBay Kleinanzeigen: {e}")
-        
-        return apartments
+        return self.ebay_scraper.scrape(city)
     
     def matches_criteria(self, apartment):
         """Prüfen ob Wohnung den Kriterien entspricht"""
@@ -372,47 +165,7 @@ class ApartmentScraper:
         return True
     
     def send_email_notification(self, apartments):
-        """E-Mail-Benachrichtigung senden"""
-        # Credentials and config are now always read from config file
-        if not self.config["notification"]["email"]["enabled"]:
-            return
-        try:
-            smtp_config = self.config["notification"]["email"]
-            msg = MIMEMultipart()
-            msg['From'] = smtp_config["sender_email"]
-            msg['To'] = smtp_config["recipient_email"]
-            msg['Subject'] = f"Neue Wohnungsangebote gefunden! ({len(apartments)} Angebote)"
-            body = f"""
-Hallo!
-
-Ich habe {len(apartments)} neue Wohnungsangebote gefunden, die Ihren Kriterien entsprechen:
-
-"""
-            for i, apartment in enumerate(apartments, 1):
-                body += f"""
-{i}. {apartment.title}
-   Preis: {apartment.price}
-   Ort: {apartment.location}
-   Zimmer: {apartment.rooms}
-   Größe: {apartment.size}
-   Quelle: {apartment.source}
-   Link: {apartment.url}
-   
-"""
-            body += f"""
-Viel Erfolg bei der Wohnungssuche!
-
-Gesendet am: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}
-"""
-            msg.attach(MIMEText(body, 'plain', 'utf-8'))
-            server = smtplib.SMTP(smtp_config["smtp_server"], smtp_config["smtp_port"])
-            server.starttls()
-            server.login(smtp_config["sender_email"], smtp_config["sender_password"])
-            server.send_message(msg)
-            server.quit()
-            logger.info(f"E-Mail-Benachrichtigung für {len(apartments)} Wohnungen gesendet")
-        except Exception as e:
-            logger.error(f"Fehler beim Senden der E-Mail: {e}")
+        self.notifier.send_email_notification(apartments)
     
     def send_webhook_notification(self, apartments):
         """Webhook-Benachrichtigung senden (z.B. Slack)"""
