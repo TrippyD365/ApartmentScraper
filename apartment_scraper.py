@@ -61,10 +61,6 @@ class ApartmentScraper:
                     "sender_email": "your_email@example.com",
                     "sender_password": "your_password_here",
                     "recipient_email": "recipient@example.com"
-                },
-                "webhook": {
-                    "enabled": False,
-                    "url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL"
                 }
             },
             "scraping": {
@@ -166,37 +162,7 @@ class ApartmentScraper:
     
     def send_email_notification(self, apartments):
         self.notifier.send_email_notification(apartments)
-    
-    def send_webhook_notification(self, apartments):
-        """Webhook-Benachrichtigung senden (z.B. Slack)"""
-        if not self.config["notification"]["webhook"]["enabled"]:
-            return
-        
-        try:
-            webhook_url = self.config["notification"]["webhook"]["url"]
-            
-            message = f"🏠 *Neue Wohnungsangebote gefunden!*\n\n"
-            
-            for apartment in apartments:
-                message += f"• *{apartment.title}*\n"
-                message += f"  💰 {apartment.price} | 📍 {apartment.location}\n"
-                message += f"  🔗 <{apartment.url}|Anzeige ansehen>\n\n"
-            
-            payload = {
-                "text": message,
-                "username": "Wohnungs-Bot",
-                "icon_emoji": ":house:"
-            }
-            
-            response = requests.post(webhook_url, json=payload)
-            if response.status_code == 200:
-                logger.info(f"Webhook-Benachrichtigung für {len(apartments)} Wohnungen gesendet")
-            else:
-                logger.error(f"Fehler beim Senden der Webhook-Benachrichtigung: {response.status_code}")
-        
-        except Exception as e:
-            logger.error(f"Fehler beim Senden der Webhook-Benachrichtigung: {e}")
-    
+
     def scrape_all_sites(self):
         """Alle Seiten scrapen"""
         all_apartments = []
@@ -246,7 +212,6 @@ class ApartmentScraper:
             
             # Benachrichtigungen senden
             self.send_email_notification(new_apartments)
-            self.send_webhook_notification(new_apartments)
             
             # Gesehene Wohnungen speichern
             self.save_seen_apartments()
